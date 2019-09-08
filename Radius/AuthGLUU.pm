@@ -17,7 +17,6 @@ use HTTP::Async;
 use HTTP::Request;
 use JSON;
 use strict;
-use Data::Dumper; # remove when we're done
 
 %Radius::AuthGLUU::ConfigKeywords = 
 (
@@ -34,7 +33,7 @@ use Data::Dumper; # remove when we're done
     'sslCAFile'  => ['string','Path to the file containing the Gluu Server instance CA cert in PEM format',1],
     'sslVerifyCnScheme' => ['string','Scheme used to perform certificate verification. See IO::Socket::SSL for details.',1],
     'sslVerifyCnName' => ['string','Set the name which is used in hostname verification. See IO::Socket::SSL for details.',1],
-    'unreachableServerAction' => ['string','Set the action to perform (accept/reject/ignore) when the server is unreachable.',1],
+    'unreachableServerAction' => ['enum','Set the action to perform (accept/reject/ignore) when the server is unreachable.',1],
     'maxRequests' => ['integer','Maximum number of simultaneous requests to the Gluu server',1],
     'httpRequestTimeout' => ['integer','HTTP Request timeout in seconds'],
     'httpMaxRequestTime' => ['integer','Max time in seconds an http request can last'],
@@ -43,6 +42,7 @@ use Data::Dumper; # remove when we're done
     'healthCheckInterval' => ['integer','Gluu Server health check interval in seconds.',1],
     'healthCheckTimeout' => ['integer','When a health check request is sent, the health check is assumed to have failed after this number of seconds',1],
     'retryInterval' => ['interval','If a configuration item download fails, wait for this amount of time before retrying'],
+    'authScheme' => ['string','The authentication scheme to be used. Can be either onestep or twostep. Default is twostep',1]
 ,);
 
 # RCS version number of this module
@@ -57,7 +57,6 @@ $Radius::AuthGLUU::GRANT_TYPE::REFRESH_TOKEN = 'refresh_token';
 
 
 # Default OpenID scopes 
-
 @Radius::AuthGLUU::DEFAULT_SCOPES = qw(openid super_gluu_ro_session);
 
 # Default acr values 
@@ -75,6 +74,7 @@ $Radius::AuthGLUU::TOKEN_PARAM::CLIENT_ASSERTION_TYPE = 'client_assertion_type';
 $Radius::AuthGLUU::TOKEN_PARAM::CLIENT_ASSERTION = 'client_assertion';
 $Radius::AuthGLUU::TOKEN_PARAM::ACR_VALUES = 'acr_values';
 $Radius::AuthGLUU::TOKEN_PARAM::SESSION_ID = '__session_id';
+$Radius::AuthGLUU::TOKEN_PARAM::AUTH_SCHEME = '__auth_scheme';
 
 # client assertion type 
 $Radius::AuthGLUU::CLIENT_ASSERTION_TYPE::JWT_BEARER = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
@@ -121,6 +121,9 @@ $Radius::AuthGLUU::REQUEST_STATE::COMPLETE = 2;
 $Radius::AuthGLUU::SESSION_STATUS::UNAUTHENTICATED = 0;
 $Radius::AuthGLUU::SESSION_STATUS::AUTHENTICATED = 1;
 
+# Auth schemes 
+$Radius::AuthGLUU::TWOSTEP_DISABLED = 0;
+$Radius::AuthGLUU::TWOSTEP_ENABLED  = 1;
 
 
 
@@ -235,6 +238,16 @@ sub check_config
         die("$class instance init failed due to configuration errors.");
     }
 
+
+    if(defined $self->{authScheme})
+    {
+        if($self->{authScheme} !~ /(onestep|twostep)/i)
+        {
+            $self->log($main::LOG_WARNING,"Authentication scheme '$self->{authScheme}' is invalid");
+            $self->{twoStepStatus} = $Radius::AuthGLUU::TWOSTEP_ENABLED;
+        }
+    }
+
     $self->log($main::LOG_DEBUG, "Configuration check for $class succeeded");
     $self->SUPER::check_config();
     return;
@@ -258,6 +271,16 @@ sub activate
     if($self->{unreachableServerAction} && (lc $self->{unreachableServerAction} eq 'reject'))
     {
         $self->unreachableServerCode = $main::REJECT;
+    }
+
+    if($self->{authScheme} && (lc $self->{authScheme} eq 'onestep'))
+    {
+        $self->{twoStepStatus} =  $Radius::AuthGLUU::TWOSTEP_DISABLED;
+    }
+
+    if($self->{authScheme} && (lc $self->{authScheme} eq 'twostep'))
+    {
+        $self->{twoStepStatus} = $Radius::AuthGLUU::TWOSTEP_ENABLED;
     }
 
     # Create http async request queue 
@@ -311,6 +334,7 @@ sub initialize
     $self->{pollInterval} = $Radius::AuthGLUU::DEFAULT_POLL_INTERVAL;
     $self->{retryInterval} = $Radius::AuthGLUU::DEFAULT_RETRY_INTERVAL;
     $self->{jwtExpiryTime} = $Radius::AuthGLUU::DEFAULT_JWT_EXPIRY_TIME;
+    $self->{twoStepStatus} = $Radius::AuthGLUU::TWOSTEP_ENABLED; 
 
     $self->{tokenEndpoint} = undef;
     $self->{jwksUri} = undef;
@@ -518,6 +542,8 @@ sub build_ro_password_auth_request
     my $grant_type = $Radius::AuthGLUU::GRANT_TYPE::RO_PASSWORD_CREDENTIALS;
     my $client_assertion_type = $Radius::AuthGLUU::CLIENT_ASSERTION_TYPE::JWT_BEARER;
     my $client_assertion = $self->generate_client_assertion();
+    my $auth_scheme = "twostep";
+    $auth_scheme = "onestep" if ($self->{twoStepStatus} == $Radius::AuthGLUU::TWOSTEP_DISABLED);
     return undef if (!defined $client_assertion);
     
     my %ro_params = (
@@ -527,7 +553,8 @@ sub build_ro_password_auth_request
         $Radius::AuthGLUU::TOKEN_PARAM::CLIENT_ID => $self->{clientId},
         $Radius::AuthGLUU::TOKEN_PARAM::STEP => $step,
         $Radius::AuthGLUU::TOKEN_PARAM::CLIENT_ASSERTION_TYPE => $client_assertion_type,
-        $Radius::AuthGLUU::TOKEN_PARAM::CLIENT_ASSERTION => $client_assertion 
+        $Radius::AuthGLUU::TOKEN_PARAM::CLIENT_ASSERTION => $client_assertion,
+        $Radius::AuthGLUU::TOKEN_PARAM::AUTH_SCHEME => $auth_scheme 
     );
 
     $ro_params{$Radius::AuthGLUU::TOKEN_PARAM::REMOTE_IP} = $remoteip 
@@ -996,6 +1023,18 @@ sub process_ro_password_auth_response
             return;
         }
 
+        # find out if this is an initiate auth response 
+        # and if we're authenticating using one-step , return success right now 
+        my $ctx_type = $context->{'context_type'};
+        if($ctx_type == $Radius::AuthGLUU::CONTEXT_TYPE::INIT_AUTH_REQUEST)
+        {
+            if($self->{twoStepStatus} == $Radius::AuthGLUU::TWOSTEP_DISABLED)
+            {
+                $on_success->($self,undef,$context);
+                return;
+            }
+        } 
+
         my $id_token_str = $json_response->{id_token};
         if(!defined $id_token_str)
         {
@@ -1038,7 +1077,6 @@ sub process_status_request_response
 
         if(exists $json_status->{'state'} && exists $json_status->{'custom_state'})
         {
-            $self->log($main::LOG_DEBUG,"$decoded_content");
             my $state = $json_status->{'state'};
             my $custom_state = $json_status->{'custom_state'};
             my $session_status;
@@ -1085,6 +1123,12 @@ sub process_status_request_response
 sub on_init_auth_success
 {
     my ($self,$id_token,$context) = @_;
+    if($self->{twoStepStatus} == $Radius::AuthGLUU::TWOSTEP_DISABLED)
+    {
+        my $p = $context->{'packet'};
+        $p->{Handler}->handlerResult($p,$main::ACCEPT,'User authenticated successfully');
+        return;
+    }
     my $sessionid = $id_token->{'__session_id'};
     my $username = $context->{'packet'}->getUserName();
     $self->log($main::LOG_DEBUG,"Init auth success ($username). Performing status check.");
