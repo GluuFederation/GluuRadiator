@@ -3,8 +3,29 @@
 # Gluu Authentication module for Radiator 
 # 
 # Author: Rolain Djeumen (rolain@gluu.org)
-# Copyright (C) 2019 Gluu Inc.
-# $Id$
+#
+
+# MIT License
+#
+# Copyright (c) 2020 Gluu Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 
 
 package Radius::AuthGLUU;
@@ -26,7 +47,7 @@ use strict;
     'clientId' => ['string','The username/client ID of the Gluu RO OpenID Client.',1],
     'signaturePkey' => ['string','The private key in PEM format used for authentication.',1],
     'signaturePkeyPassword' => ['string','The signature private key\'s password.',1],
-    'signaturePkeyId' => ['string','This is the key Id of the public key which will be used for decoding',1],
+    'signaturePkeyId' => ['string','This is the key Id of the authentication public key',1],
     'signatureAlgorithm' => ['enum','The algorithm used for authentication. Defaults to RS512',1,\@Radius::AuthGLUU::ALGORITHMS],
     'sslVerifyCert' => ['flag','Set to yes/no to enable/disable ssl certificate verification. Default is yes',1],
     'sslCAPath'  => ['string','Path of the directory containing CA certificates in PEM format.',1],
